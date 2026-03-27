@@ -1,0 +1,19 @@
+app = "osu-misscount-bot"
+primary_region = "ams"  # Amsterdam, dichtste bij NL
+
+[build]
+
+[env]
+  # Geen secrets hier — die zet je via fly secrets set
+
+[[mounts]]
+  source = "bot_data"
+  destination = "/app/data"
+
+[http_service]
+  # Geen HTTP nodig voor een Discord bot, dus dit weglaten
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1

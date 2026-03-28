@@ -18,7 +18,8 @@ async def init_db():
                 channel_id INTEGER NOT NULL,
                 start_date TEXT NOT NULL,
                 end_date TEXT NOT NULL,
-                active INTEGER DEFAULT 1
+                active INTEGER DEFAULT 1,
+                leaderboard_message_id INTEGER
             )
         """)
         await conn.execute("""
@@ -151,7 +152,8 @@ def _row_to_contest(row):
         "id": row[0], "beatmap_id": row[1], "map_name": row[2],
         "map_url": row[3], "cover_url": row[4],
         "submitted_by": row[5], "channel_id": row[6],
-        "start_date": row[7], "end_date": row[8], "active": row[9]
+        "start_date": row[7], "end_date": row[8], "active": row[9],
+        "leaderboard_message_id": row[10] if len(row) > 10 else None
     }
 
 async def close_contest(contest_id):
@@ -242,3 +244,11 @@ async def get_global_leaderboard():
         ) as cursor:
             rows = await cursor.fetchall()
     return [{"user_id": r[0], "discord_username": r[1], "osu_username": r[2], "points": r[3]} for r in rows]
+
+async def set_leaderboard_message_id(contest_id, message_id):
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "UPDATE contests SET leaderboard_message_id=? WHERE id=?",
+            (message_id, contest_id)
+        )
+        await conn.commit()

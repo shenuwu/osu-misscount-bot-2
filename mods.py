@@ -19,26 +19,24 @@ class Mods(IntFlag):
     PF = 1 << 14
 
 # Mods die een score ongeldig maken
-BANNED_MODS = Mods.HT | Mods.RX | Mods.AP
+BANNED_MODS = Mods.HT | Mods.RX | Mods.AP | Mods.FL
 
 # Mods die transparant zijn (tellen niet mee voor categorie)
 TRANSPARENT_MODS = Mods.NF | Mods.HD | Mods.SD | Mods.PF | Mods.TD | Mods.SO
 
 # Categorieën op volgorde van prioriteit
-MOD_CATEGORIES = ["NM", "HR", "DT", "FL"]
+MOD_CATEGORIES = ["NM", "HR", "DT"]
 
 MOD_COLORS = {
     "NM": 0xFFFFFF,
     "HR": 0xFF5555,
     "DT": 0xFFAA00,
-    "FL": 0x333333,
 }
 
 MOD_LABELS = {
     "NM": "NoMod",
     "HR": "Hard Rock",
     "DT": "Double Time",
-    "FL": "Flashlight",
 }
 
 def parse_mods(mods_list: list) -> Mods:
@@ -67,8 +65,6 @@ def get_category(mods: Mods) -> str | None:
     # Strip transparante mods
     effective = mods & ~TRANSPARENT_MODS
 
-    if bool(effective & Mods.FL):
-        return "FL"
     if bool(effective & Mods.DT) or bool(effective & Mods.NC):
         return "DT"
     if bool(effective & Mods.HR):

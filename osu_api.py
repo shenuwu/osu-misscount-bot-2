@@ -56,13 +56,13 @@ async def get_beatmap(beatmap_id: int) -> dict | None:
             return await r.json()
 
 async def get_user_recent_scores(osu_user_id: int, limit: int = 100) -> list:
-    """Haal recente scores op van een user (inclusief fails)."""
+    """Haal recente scores op van een user (exclusief fails)."""
     headers = await get_headers()
     async with aiohttp.ClientSession() as session:
         async with session.get(
             f"{OSU_API_BASE}/users/{osu_user_id}/scores/recent",
             headers=headers,
-            params={"limit": limit, "include_fails": 1, "mode": "osu"}
+            params={"limit": limit, "include_fails": 0, "mode": "osu"}
         ) as r:
             if r.status != 200:
                 return []

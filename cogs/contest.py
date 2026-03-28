@@ -163,6 +163,31 @@ class Contest(commands.Cog):
     def cog_unload(self):
         self.poll_scores.cancel()
 
+    async def update_leaderboard(self, contest: dict):
+        """Edit het vaste leaderboard bericht in het contest channel."""
+        msg_id = contest.get("leaderboard_message_id")
+        if not msg_id:
+            return
+        channel = self.bot.get_channel(contest["channel_id"])
+        if not channel:
+            return
+        try:
+            msg = await channel.fetch_message(msg_id)
+            scores_by_cat = await db.get_all_scores_for_contest(contest["id"])
+            lb_embeds = make_leaderboard_embed(contest, scores_by_cat)
+            end = datetime.fromisoformat(contest["end_date"])
+            header = discord.Embed(
+                title="📊  Leaderboard",
+                description=f"**[{contest['map_name']}]({contest['map_url']})**
+Eindigt <t:{int(end.timestamp())}:R>",
+                color=COLOR_PURPLE,
+            )
+            if contest.get("cover_url"):
+                header.set_thumbnail(url=contest["cover_url"])
+            await msg.edit(embeds=[header] + lb_embeds)
+        except Exception as e:
+            print(f"[Leaderboard update] Fout: {e}")
+
     async def log(self, embed: discord.Embed):
         """Stuur een log embed naar het bot-logs kanaal in elke guild."""
         for guild in self.bot.guilds:
@@ -268,6 +293,21 @@ class Contest(commands.Cog):
         contest = await db.get_contest_by_id(contest_id)
         embed = make_contest_embed(contest)
         await contest_channel.send(embed=embed)
+
+        # Post initiële leaderboard die later geüpdatet wordt
+        lb_embeds = make_leaderboard_embed(contest, {})
+        end = datetime.fromisoformat(contest["end_date"])
+        header = discord.Embed(
+            title="📊  Leaderboard",
+            description=f"**[{map_name}]({map_url})**
+Eindigt <t:{int(end.timestamp())}:R>",
+            color=COLOR_PURPLE,
+        )
+        if cover_url:
+            header.set_thumbnail(url=cover_url)
+        lb_msg = await contest_channel.send(embeds=[header] + lb_embeds)
+        await db.set_leaderboard_message_id(contest_id, lb_msg.id)
+
         await interaction.followup.send(f"✅ Contest aangemaakt in {contest_channel.mention}!")
 
         log_embed = discord.Embed(
@@ -475,6 +515,10 @@ class Contest(commands.Cog):
                     contest_start = datetime.fromisoformat(contest["start_date"])
 
                     for score in raw_scores:
+                        # Sla fails over
+                        if not score.get("passed", True):
+                            continue
+
                         # Sla scores over die voor de contest start gespeeld zijn
                         ended_at = score.get("ended_at") or score.get("created_at")
                         if ended_at:

@@ -472,7 +472,16 @@ class Contest(commands.Cog):
                         continue
 
                     best_per_cat: dict[str, dict] = {}
+                    contest_start = datetime.fromisoformat(contest["start_date"])
+
                     for score in raw_scores:
+                        # Sla scores over die voor de contest start gespeeld zijn
+                        ended_at = score.get("ended_at") or score.get("created_at")
+                        if ended_at:
+                            score_time = datetime.fromisoformat(ended_at.replace("Z", "+00:00")).replace(tzinfo=None)
+                            if score_time < contest_start:
+                                continue
+
                         mods_list = extract_mods(score.get("mods", []))
                         mods = parse_mods(mods_list)
 

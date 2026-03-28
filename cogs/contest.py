@@ -8,6 +8,22 @@ import database as db
 import osu_api as osu
 from mods import parse_mods, is_banned, get_category, mods_display, MOD_CATEGORIES, MOD_COLORS, MOD_LABELS
 
+def extract_mods(mods) -> list[str]:
+    """Zet osu! API mods om naar een lijst van mod strings, ongeacht formaat."""
+    if not mods:
+        return []
+    if isinstance(mods, list):
+        result = []
+        for m in mods:
+            if isinstance(m, str):
+                result.append(m)
+            elif isinstance(m, dict):
+                acronym = m.get("acronym") or m.get("name") or m.get("mod")
+                if acronym:
+                    result.append(acronym)
+        return result
+    return []
+
 CONTEST_ROLE_NAME = os.getenv("CONTEST_ROLE", "contest-submitter")
 ADMIN_ROLE_NAME = os.getenv("ADMIN_ROLE", "contest-admin")
 LOG_CHANNEL_NAME = os.getenv("LOG_CHANNEL", "bot-logs")
@@ -457,7 +473,7 @@ class Contest(commands.Cog):
 
                     best_per_cat: dict[str, dict] = {}
                     for score in raw_scores:
-                        mods_list = [m["acronym"] for m in score.get("mods", [])] if isinstance(score.get("mods"), list) else score.get("mods", [])
+                        mods_list = extract_mods(score.get("mods", []))
                         mods = parse_mods(mods_list)
 
                         if is_banned(mods):
@@ -480,7 +496,7 @@ class Contest(commands.Cog):
                                 best_per_cat[cat] = score
 
                     for cat, score in best_per_cat.items():
-                        mods_list = [m["acronym"] for m in score.get("mods", [])] if isinstance(score.get("mods"), list) else score.get("mods", [])
+                        mods_list = extract_mods(score.get("mods", []))
                         miss = score["statistics"].get("count_miss", 0)
                         acc = round(score.get("accuracy", 0) * 100, 2)
                         score_id = score.get("id", 0)

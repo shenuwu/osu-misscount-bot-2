@@ -6,6 +6,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+required_vars = ["DISCORD_TOKEN", "OSU_CLIENT_ID", "OSU_CLIENT_SECRET"]
+missing = [v for v in required_vars if not os.getenv(v)]
+if missing:
+    print(f"ERROR: Ontbrekende environment variables: {', '.join(missing)}")
+    exit(1)
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True

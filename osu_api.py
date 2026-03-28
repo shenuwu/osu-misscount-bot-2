@@ -14,17 +14,26 @@ async def get_token() -> str:
     client_id = os.getenv("OSU_CLIENT_ID")
     client_secret = os.getenv("OSU_CLIENT_SECRET")
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(TOKEN_URL, json={
-            "client_id": int(client_id),
-            "client_secret": client_secret,
-            "grant_type": "client_credentials",
-            "scope": "public"
-        }) as r:
-            data = await r.json()
-            _token_cache["token"] = data["access_token"]
-            _token_cache["expires_at"] = time.time() + data["expires_in"]
-            return _token_cache["token"]
+    if not client_id or not client_secret:
+        raise ValueError("OSU_CLIENT_ID en OSU_CLIENT_SECRET moeten ingesteld zijn in de environment variables")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(TOKEN_URL, json={
+                "client_id": int(client_id),
+                "client_secret": client_secret,
+                "grant_type": "client_credentials",
+                "scope": "public"
+            }) as r:
+                if r.status != 200:
+                    raise Exception(f"osu! token request mislukt: HTTP {r.status}")
+                data = await r.json()
+                _token_cache["token"] = data["access_token"]
+                _token_cache["expires_at"] = time.time() + data["expires_in"]
+                return _token_cache["token"]
+    except Exception as e:
+        print(f"ERROR: osu! token ophalen mislukt: {e}")
+        raise
 
 async def get_headers() -> dict:
     token = await get_token()

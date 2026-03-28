@@ -132,8 +132,10 @@ def make_winner_embed(contest: dict, winners_by_cat: dict) -> discord.Embed:
 class Contest(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        db.init_db()
         self.poll_scores.start()
+
+    async def cog_load(self):
+        await db.init_db()
 
     def cog_unload(self):
         self.poll_scores.cancel()
@@ -148,7 +150,7 @@ class Contest(commands.Cog):
             await interaction.followup.send(f"❌ Gebruiker **{username}** niet gevonden op osu!", ephemeral=True)
             return
 
-        db.link_user(
+        await db.link_user(
             discord_id=interaction.user.id,
             discord_username=str(interaction.user),
             osu_username=user_data["username"],
@@ -171,11 +173,11 @@ class Contest(commands.Cog):
     async def submit(self, interaction: discord.Interaction, map_url: str):
         await interaction.response.defer()
 
-        if db.has_submitted_this_month(interaction.user.id):
+        if await db.has_submitted_this_month(interaction.user.id):
             await interaction.followup.send("❌ Je hebt deze maand al een map ingediend.", ephemeral=True)
             return
 
-        active = db.get_active_contest()
+        active = await db.get_active_contest()
         if active:
             await interaction.followup.send("❌ Er is al een actieve contest. Wacht tot die afloopt.", ephemeral=True)
             return
@@ -207,7 +209,7 @@ class Contest(commands.Cog):
         start = datetime.now()
         end = start + timedelta(weeks=2)
 
-        contest_id = db.create_contest(
+        contest_id = await db.create_contest(
             beatmap_id=beatmap_id,
             map_name=map_name,
             map_url=map_url,
@@ -217,9 +219,9 @@ class Contest(commands.Cog):
             start_date=start,
             end_date=end
         )
-        db.log_map_submission(interaction.user.id)
+        await db.log_map_submission(interaction.user.id)
 
-        contest = db.get_contest_by_id(contest_id)
+        contest = await db.get_contest_by_id(contest_id)
         embed = make_contest_embed(contest)
         await contest_channel.send(embed=embed)
         await interaction.followup.send(f"✅ Contest aangemaakt in {contest_channel.mention}!")
@@ -228,12 +230,12 @@ class Contest(commands.Cog):
     @app_commands.command(name="leaderboard", description="Bekijk de scores van de huidige contest")
     async def leaderboard(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        contest = db.get_active_contest()
+        contest = await db.get_active_contest()
         if not contest:
             await interaction.followup.send("❌ Er is geen actieve contest.", ephemeral=True)
             return
 
-        scores_by_cat = db.get_all_scores_for_contest(contest["id"])
+        scores_by_cat = await db.get_all_scores_for_contest(contest["id"])
         embeds = make_leaderboard_embed(contest, scores_by_cat)
 
         end = datetime.fromisoformat(contest["end_date"])
@@ -251,7 +253,7 @@ class Contest(commands.Cog):
     @app_commands.command(name="rankings", description="Bekijk de totale puntenstand")
     async def rankings(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        board = db.get_global_leaderboard()
+        board = await db.get_global_leaderboard()
 
         embed = discord.Embed(title="🏆  Puntenstand", color=COLOR_GOLD)
         if not board:
@@ -272,7 +274,7 @@ class Contest(commands.Cog):
     @app_commands.command(name="contestinfo", description="Bekijk info over de huidige contest")
     async def contestinfo(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        contest = db.get_active_contest()
+        contest = await db.get_active_contest()
         if not contest:
             await interaction.followup.send("❌ Er is geen actieve contest.", ephemeral=True)
             return
@@ -288,7 +290,7 @@ class Contest(commands.Cog):
     @has_admin_role()
     async def endcontest(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        contest = db.get_active_contest()
+        contest = await db.get_active_contest()
         if not contest:
             await interaction.followup.send("❌ Geen actieve contest.", ephemeral=True)
             return
@@ -300,12 +302,12 @@ class Contest(commands.Cog):
     @has_admin_role()
     async def cancelcontest(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        contest = db.get_active_contest()
+        contest = await db.get_active_contest()
         if not contest:
             await interaction.followup.send("❌ Geen actieve contest.", ephemeral=True)
             return
 
-        db.close_contest(contest["id"])
+        await db.close_contest(contest["id"])
         channel = self.bot.get_channel(contest["channel_id"])
 
         embed = discord.Embed(
@@ -323,12 +325,12 @@ class Contest(commands.Cog):
     @has_admin_role()
     async def deletecontest(self, interaction: discord.Interaction, contest_id: int):
         await interaction.response.defer(ephemeral=True)
-        contest = db.get_contest_by_id(contest_id)
+        contest = await db.get_contest_by_id(contest_id)
         if not contest:
             await interaction.followup.send(f"❌ Contest #{contest_id} niet gevonden.", ephemeral=True)
             return
 
-        db.delete_contest(contest_id)
+        await db.delete_contest(contest_id)
         await interaction.followup.send(
             f"✅ Contest **#{contest_id} — {contest['map_name']}** en alle scores zijn verwijderd.",
             ephemeral=True
@@ -339,7 +341,7 @@ class Contest(commands.Cog):
     @has_admin_role()
     async def listcontests(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        contests = db.get_all_contests()
+        contests = await db.get_all_contests()
         if not contests:
             await interaction.followup.send("Nog geen contests.", ephemeral=True)
             return
@@ -355,7 +357,7 @@ class Contest(commands.Cog):
     # ── Polling loop ────────────────────────────────────────────────────────
     @tasks.loop(minutes=5)
     async def poll_scores(self):
-        contest = db.get_active_contest()
+        contest = await db.get_active_contest()
         if not contest:
             return
 
@@ -364,7 +366,7 @@ class Contest(commands.Cog):
             await self._close_contest(contest)
             return
 
-        users = db.get_all_linked_users()
+        users = await db.get_all_linked_users()
         for user in users:
             try:
                 raw_scores = await osu.get_user_scores_on_beatmap(user["osu_id"], contest["beatmap_id"])
@@ -403,7 +405,7 @@ class Contest(commands.Cog):
                     score_id = score.get("id", 0)
                     mod_str = mods_display(mods_list)
 
-                    updated = db.upsert_score(
+                    updated = await db.upsert_score(
                         contest_id=contest["id"],
                         user_id=user["discord_id"],
                         discord_username=user["discord_username"],
@@ -434,12 +436,12 @@ class Contest(commands.Cog):
         await self.bot.wait_until_ready()
 
     async def _close_contest(self, contest: dict, manual_channel=None):
-        db.close_contest(contest["id"])
+        await db.close_contest(contest["id"])
         channel = self.bot.get_channel(contest["channel_id"]) or manual_channel
         if not channel:
             return
 
-        scores_by_cat = db.get_all_scores_for_contest(contest["id"])
+        scores_by_cat = await db.get_all_scores_for_contest(contest["id"])
 
         # Winnaars per categorie + punten uitdelen
         winners_by_cat = {}
@@ -449,7 +451,7 @@ class Contest(commands.Cog):
             if scores:
                 winner = scores[0]
                 winners_by_cat[cat] = winner
-                db.add_point(winner["user_id"], winner["discord_username"], winner["osu_username"])
+                await db.add_point(winner["user_id"], winner["discord_username"], winner["osu_username"])
                 member = channel.guild.get_member(winner["user_id"])
                 if member:
                     mentions.append(member.mention)

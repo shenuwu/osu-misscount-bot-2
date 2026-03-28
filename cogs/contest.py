@@ -472,6 +472,91 @@ Eindigt <t:{int(end.timestamp())}:R>",
             ephemeral=True
         )
 
+    # /refresh
+    @app_commands.command(name="refresh", description="[Admin] Refresh alle actieve leaderboards en poll scores opnieuw")
+    @has_admin_role()
+    async def refresh(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        contests = await db.get_active_contests()
+        if not contests:
+            await interaction.followup.send("❌ Geen actieve contests.", ephemeral=True)
+            return
+
+        users = await db.get_all_linked_users()
+        updated_count = 0
+
+        for contest in contests:
+            # Poll scores opnieuw voor alle users
+            for user in users:
+                try:
+                    raw_scores = await osu.get_user_scores_on_beatmap(user["osu_id"], contest["beatmap_id"])
+                    if not raw_scores:
+                        continue
+
+                    contest_start = datetime.fromisoformat(contest["start_date"])
+                    best_per_cat: dict[str, dict] = {}
+
+                    for score in raw_scores:
+                        if not score.get("passed", True):
+                            continue
+                        ended_at = score.get("ended_at") or score.get("created_at")
+                        if ended_at:
+                            score_time = datetime.fromisoformat(ended_at.replace("Z", "+00:00")).replace(tzinfo=None)
+                            if score_time < contest_start:
+                                continue
+
+                        mods_list = extract_mods(score.get("mods", []))
+                        mods = parse_mods(mods_list)
+                        if is_banned(mods):
+                            continue
+                        cat = get_category(mods)
+                        if cat is None:
+                            continue
+
+                        miss = score["statistics"].get("count_miss", 0)
+                        acc = round(score.get("accuracy", 0) * 100, 2)
+
+                        if cat not in best_per_cat:
+                            best_per_cat[cat] = score
+                        else:
+                            prev = best_per_cat[cat]
+                            prev_miss = prev["statistics"].get("count_miss", 0)
+                            prev_acc = round(prev.get("accuracy", 0) * 100, 2)
+                            if miss < prev_miss or (miss == prev_miss and acc > prev_acc):
+                                best_per_cat[cat] = score
+
+                    for cat, score in best_per_cat.items():
+                        mods_list = extract_mods(score.get("mods", []))
+                        miss = score["statistics"].get("count_miss", 0)
+                        acc = round(score.get("accuracy", 0) * 100, 2)
+                        score_id = score.get("id", 0)
+                        mod_str = mods_display(mods_list)
+                        updated = await db.upsert_score(
+                            contest_id=contest["id"],
+                            user_id=user["discord_id"],
+                            discord_username=user["discord_username"],
+                            osu_username=user["osu_username"],
+                            misscount=miss,
+                            accuracy=acc,
+                            score_id=score_id,
+                            mod_category=cat,
+                            mods_display=mod_str,
+                        )
+                        if updated:
+                            updated_count += 1
+
+                except Exception as e:
+                    print(f"[Refresh] Fout voor {user['osu_username']}: {e}")
+
+            # Update leaderboard bericht
+            fresh_contest = await db.get_contest_by_id(contest["id"])
+            await self.update_leaderboard(fresh_contest)
+
+        await interaction.followup.send(
+            f"✅ Refresh klaar — {len(contests)} contest(s) gecheckt, {updated_count} score(s) bijgewerkt.",
+            ephemeral=True
+        )
+
     # /listcontests
     @app_commands.command(name="listcontests", description="[Admin] Bekijk alle contests")
     @has_admin_role()

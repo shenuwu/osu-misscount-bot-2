@@ -18,29 +18,16 @@ class Mods(IntFlag):
     AP = 1 << 13
     PF = 1 << 14
 
-# Mods die een score ongeldig maken
-BANNED_MODS = Mods.HT | Mods.RX | Mods.AP | Mods.FL
+# Mods die een score altijd ongeldig maken
+BANNED_MODS = Mods.HT | Mods.RX | Mods.AP
 
-# Mods die transparant zijn (tellen niet mee voor categorie)
+# Mods die transparant zijn (tellen niet mee voor categorie bepaling)
 TRANSPARENT_MODS = Mods.NF | Mods.HD | Mods.SD | Mods.PF | Mods.TD | Mods.SO
 
-# Categorieën op volgorde van prioriteit
-MOD_CATEGORIES = ["NM", "HR", "DT"]
-
-MOD_COLORS = {
-    "NM": 0xFFFFFF,
-    "HR": 0xFF5555,
-    "DT": 0xFFAA00,
-}
-
-MOD_LABELS = {
-    "NM": "NoMod",
-    "HR": "Hard Rock",
-    "DT": "Double Time",
-}
+# Verplichte mods die gekozen kunnen worden bij /submit
+REQUIRED_MOD_CHOICES = ["NM", "DT", "HR", "EZ"]
 
 def parse_mods(mods_list: list) -> Mods:
-    """Zet een lijst van mod strings om naar een Mods bitfield."""
     result = Mods.NM
     for mod in mods_list:
         try:
@@ -50,36 +37,44 @@ def parse_mods(mods_list: list) -> Mods:
     return result
 
 def is_banned(mods: Mods) -> bool:
-    """True als de score een verboden mod bevat."""
     return bool(mods & BANNED_MODS)
 
-def get_category(mods: Mods) -> str | None:
+def get_effective_mods(mods: Mods) -> Mods:
+    """Strip transparante mods, geeft de 'echte' mods terug."""
+    return mods & ~TRANSPARENT_MODS
+
+def matches_required_mod(mods: Mods, required_mod: str) -> bool:
     """
-    Bepaal de mod categorie van een score.
-    Transparante mods (NF, HD, SD, PF) worden genegeerd.
-    Geeft None terug als de score een verboden mod heeft.
+    Checkt of een score voldoet aan de verplichte mod.
+    HD en NF zijn altijd transparant en tellen mee.
+    De score mag ALLEEN de verplichte mod hebben (+ HD/NF).
     """
-    if is_banned(mods):
-        return None
+    effective = get_effective_mods(mods)
 
-    # Strip transparante mods
-    effective = mods & ~TRANSPARENT_MODS
-
-    if bool(effective & Mods.DT) or bool(effective & Mods.NC):
-        return "DT"
-    if bool(effective & Mods.HR):
-        return "HR"
-    if effective == Mods.NM:
-        return "NM"
-
-    # Onbekende mod combo (bijv. EZ, TD alleen) → negeer
-    return None
+    if required_mod == "NM":
+        return effective == Mods.NM
+    elif required_mod == "DT":
+        return effective == Mods.DT or effective == (Mods.DT | Mods.NC)
+    elif required_mod == "HR":
+        return effective == Mods.HR
+    elif required_mod == "EZ":
+        return effective == Mods.EZ
+    return False
 
 def mods_display(mods_list: list) -> str:
-    """Geeft een leesbare string van actieve mods, zonder transparante."""
+    """Leesbare mod string."""
     mods = parse_mods(mods_list)
     active = []
-    for mod in ["EZ", "HR", "DT", "NC", "HT", "FL", "HD", "NF", "SD", "PF"]:
+    for mod in ["EZ", "HD", "HR", "DT", "NC", "FL", "NF", "SD", "PF"]:
         if bool(mods & Mods[mod]):
             active.append(mod)
     return "+" + "".join(active) if active else "+NM"
+
+def normalize_mod_key(mods_list: list) -> str:
+    """Geeft een gesorteerde, genormaliseerde mod string voor gebruik als unieke sleutel."""
+    mods = parse_mods(mods_list)
+    active = []
+    for mod in ["EZ", "HD", "HR", "DT", "NC", "HT", "FL", "NF", "SD", "PF"]:
+        if bool(mods & Mods[mod]):
+            active.append(mod)
+    return "".join(active) if active else "NM"

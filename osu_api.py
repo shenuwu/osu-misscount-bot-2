@@ -69,18 +69,26 @@ async def get_user_recent_scores(osu_user_id: int, limit: int = 100) -> list:
             return await r.json()
 
 async def get_user_scores_on_beatmap(osu_user_id: int, beatmap_id: int) -> list:
-    """Haal alle scores van een user op een specifieke beatmap op."""
+    """Haal alle scores van een user op een specifieke beatmap op.
+    Probeert eerst de ranked endpoint, valt terug op recente scores voor unranked maps."""
     headers = await get_headers()
+
+    # Probeer eerst ranked endpoint
     async with aiohttp.ClientSession() as session:
         async with session.get(
             f"{OSU_API_BASE}/beatmaps/{beatmap_id}/scores/users/{osu_user_id}/all",
             headers=headers,
             params={"mode": "osu"}
         ) as r:
-            if r.status != 200:
-                return []
-            data = await r.json()
-            return data.get("scores", [])
+            if r.status == 200:
+                data = await r.json()
+                scores = data.get("scores", [])
+                if scores:
+                    return scores
+
+    # Fallback: haal recente scores op en filter op beatmap_id (voor unranked maps)
+    recent = await get_user_recent_scores(osu_user_id, limit=100)
+    return [s for s in recent if s.get("beatmap_id") == beatmap_id or (s.get("beatmap") or {}).get("id") == beatmap_id]
 
 def parse_beatmap_id_from_url(url: str) -> int | None:
     """Haal beatmap ID uit een osu! URL. Ondersteunt /b/, /beatmaps/, en #osu/ formaten."""

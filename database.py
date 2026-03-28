@@ -95,11 +95,11 @@ async def get_all_linked_users():
 
 # --- Contests ---
 
-async def has_submitted_this_month(user_id):
-    month = datetime.now().strftime("%Y-%m")
+async def has_active_submission(user_id):
+    """True als deze user al een nog actieve contest heeft ingediend."""
     async with aiosqlite.connect(DB_PATH) as conn:
         async with conn.execute(
-            "SELECT 1 FROM submission_log WHERE user_id=? AND month=?", (user_id, month)
+            "SELECT 1 FROM contests WHERE submitted_by=? AND active=1", (user_id,)
         ) as cursor:
             return await cursor.fetchone() is not None
 
@@ -121,13 +121,14 @@ async def create_contest(beatmap_id, map_name, map_url, cover_url, submitted_by,
         await conn.commit()
     return contest_id
 
-async def get_active_contest():
+async def get_active_contests():
+    """Geeft alle actieve contests terug."""
     async with aiosqlite.connect(DB_PATH) as conn:
         async with conn.execute(
-            "SELECT * FROM contests WHERE active=1 ORDER BY id DESC LIMIT 1"
+            "SELECT * FROM contests WHERE active=1 ORDER BY id DESC"
         ) as cursor:
-            row = await cursor.fetchone()
-    return _row_to_contest(row)
+            rows = await cursor.fetchall()
+    return [_row_to_contest(r) for r in rows]
 
 async def get_contest_by_id(contest_id):
     async with aiosqlite.connect(DB_PATH) as conn:

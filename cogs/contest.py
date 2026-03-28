@@ -10,12 +10,13 @@ from mods import parse_mods, is_banned, get_category, mods_display, MOD_CATEGORI
 
 CONTEST_ROLE_NAME = os.getenv("CONTEST_ROLE", "contest-submitter")
 ADMIN_ROLE_NAME = os.getenv("ADMIN_ROLE", "contest-admin")
+LOG_CHANNEL_NAME = os.getenv("LOG_CHANNEL", "bot-logs")
 
 # ── Kleuren ────────────────────────────────────────────────────────────────
-COLOR_PINK    = 0xFF69B4
-COLOR_GOLD    = 0xFFD700
-COLOR_PURPLE  = 0x9B59B6
-COLOR_DARK    = 0x2B2D31
+COLOR_PINK   = 0xFF69B4
+COLOR_GOLD   = 0xFFD700
+COLOR_PURPLE = 0x9B59B6
+COLOR_DARK   = 0x2B2D31
 
 # ── Checks ─────────────────────────────────────────────────────────────────
 def has_contest_role():
@@ -42,8 +43,14 @@ def has_admin_role():
         return False
     return app_commands.check(predicate)
 
+def is_admin(interaction: discord.Interaction) -> bool:
+    if interaction.user.guild_permissions.administrator:
+        return True
+    role = discord.utils.get(interaction.guild.roles, name=ADMIN_ROLE_NAME)
+    return bool(role and role in interaction.user.roles)
+
 # ── Embed helpers ───────────────────────────────────────────────────────────
-def make_contest_embed(contest: dict, beatmap: dict = None) -> discord.Embed:
+def make_contest_embed(contest: dict) -> discord.Embed:
     end = datetime.fromisoformat(contest["end_date"])
     start = datetime.fromisoformat(contest["start_date"])
 
@@ -140,6 +147,16 @@ class Contest(commands.Cog):
     def cog_unload(self):
         self.poll_scores.cancel()
 
+    async def log(self, embed: discord.Embed):
+        """Stuur een log embed naar het bot-logs kanaal in elke guild."""
+        for guild in self.bot.guilds:
+            channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME)
+            if channel:
+                try:
+                    await channel.send(embed=embed)
+                except Exception:
+                    pass
+
     # /link
     @app_commands.command(name="link", description="Koppel je osu! account aan de bot")
     @app_commands.describe(username="Jouw osu! gebruikersnaam")
@@ -166,6 +183,15 @@ class Contest(commands.Cog):
         embed.set_footer(text=f"osu! ID: {user_data['id']}")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+        log_embed = discord.Embed(
+            title="🔗 Account gelinkt",
+            description=f"**{interaction.user}** heeft osu! account **{user_data['username']}** gekoppeld.",
+            color=COLOR_PINK,
+            timestamp=datetime.now()
+        )
+        log_embed.set_footer(text=f"Discord ID: {interaction.user.id} · osu! ID: {user_data['id']}")
+        await self.log(log_embed)
+
     # /submit
     @app_commands.command(name="submit", description="Dien een map in voor de tweewekelijkse contest")
     @app_commands.describe(map_url="Link naar de osu! beatmap")
@@ -173,14 +199,14 @@ class Contest(commands.Cog):
     async def submit(self, interaction: discord.Interaction, map_url: str):
         await interaction.response.defer()
 
-        if await db.has_submitted_this_month(interaction.user.id):
-            await interaction.followup.send("❌ Je hebt deze maand al een map ingediend.", ephemeral=True)
-            return
-
-        active = await db.get_active_contest()
-        if active:
-            await interaction.followup.send("❌ Er is al een actieve contest. Wacht tot die afloopt.", ephemeral=True)
-            return
+        # Admins mogen altijd indienen, anderen alleen als ze geen actieve contest hebben
+        if not is_admin(interaction):
+            if await db.has_active_submission(interaction.user.id):
+                await interaction.followup.send(
+                    "❌ Je hebt al een actieve contest lopen. Wacht tot die afloopt voor je een nieuwe indient.",
+                    ephemeral=True
+                )
+                return
 
         beatmap_id = osu.parse_beatmap_id_from_url(map_url)
         if not beatmap_id:
@@ -197,7 +223,10 @@ class Contest(commands.Cog):
 
         guild = interaction.guild
         category = interaction.channel.category
-        channel_name = f"contest-{datetime.now().strftime('%Y-%m')}"
+
+        # Unieke channel naam op basis van map naam (ingekort)
+        safe_name = "".join(c for c in beatmap['beatmapset']['title'].lower() if c.isalnum() or c == " ").strip()[:30].strip()
+        channel_name = f"contest-{safe_name.replace(' ', '-')}"
 
         contest_channel = await guild.create_text_channel(
             name=channel_name,
@@ -219,28 +248,57 @@ class Contest(commands.Cog):
             start_date=start,
             end_date=end
         )
-        await db.log_map_submission(interaction.user.id)
 
         contest = await db.get_contest_by_id(contest_id)
         embed = make_contest_embed(contest)
         await contest_channel.send(embed=embed)
         await interaction.followup.send(f"✅ Contest aangemaakt in {contest_channel.mention}!")
 
+        log_embed = discord.Embed(
+            title="🎵 Contest aangemaakt",
+            description=f"**{interaction.user}** heeft een contest ingediend.",
+            color=COLOR_PINK,
+            timestamp=datetime.now()
+        )
+        log_embed.add_field(name="Map", value=f"[{map_name}]({map_url})", inline=False)
+        log_embed.add_field(name="Channel", value=contest_channel.mention, inline=True)
+        log_embed.add_field(name="Contest ID", value=f"#{contest_id}", inline=True)
+        log_embed.add_field(name="Eindigt", value=f"<t:{int(end.timestamp())}:R>", inline=True)
+        await self.log(log_embed)
+
     # /leaderboard
-    @app_commands.command(name="leaderboard", description="Bekijk de scores van de huidige contest")
-    async def leaderboard(self, interaction: discord.Interaction):
+    @app_commands.command(name="leaderboard", description="Bekijk de scores van een actieve contest")
+    @app_commands.describe(contest_id="Contest ID (optioneel, zie /listcontests)")
+    async def leaderboard(self, interaction: discord.Interaction, contest_id: int = None):
         await interaction.response.defer()
-        contest = await db.get_active_contest()
-        if not contest:
-            await interaction.followup.send("❌ Er is geen actieve contest.", ephemeral=True)
-            return
+
+        if contest_id:
+            contest = await db.get_contest_by_id(contest_id)
+            if not contest:
+                await interaction.followup.send(f"❌ Contest #{contest_id} niet gevonden.", ephemeral=True)
+                return
+        else:
+            contests = await db.get_active_contests()
+            if not contests:
+                await interaction.followup.send("❌ Er zijn geen actieve contests.", ephemeral=True)
+                return
+            if len(contests) == 1:
+                contest = contests[0]
+            else:
+                # Meerdere actieve contests — toon lijst
+                lines = [f"`#{c['id']}` **{c['map_name']}**" for c in contests]
+                await interaction.followup.send(
+                    f"Er zijn **{len(contests)}** actieve contests. Gebruik `/leaderboard <id>` om een specifieke te bekijken:\n" + "\n".join(lines),
+                    ephemeral=True
+                )
+                return
 
         scores_by_cat = await db.get_all_scores_for_contest(contest["id"])
         embeds = make_leaderboard_embed(contest, scores_by_cat)
 
         end = datetime.fromisoformat(contest["end_date"])
         header = discord.Embed(
-            title=f"📊  Leaderboard",
+            title="📊  Leaderboard",
             description=f"**[{contest['map_name']}]({contest['map_url']})**\nEindigt <t:{int(end.timestamp())}:R>",
             color=COLOR_PURPLE,
         )
@@ -271,40 +329,53 @@ class Contest(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     # /contestinfo
-    @app_commands.command(name="contestinfo", description="Bekijk info over de huidige contest")
-    async def contestinfo(self, interaction: discord.Interaction):
+    @app_commands.command(name="contestinfo", description="Bekijk info over actieve contests")
+    @app_commands.describe(contest_id="Contest ID (optioneel)")
+    async def contestinfo(self, interaction: discord.Interaction, contest_id: int = None):
         await interaction.response.defer()
-        contest = await db.get_active_contest()
-        if not contest:
-            await interaction.followup.send("❌ Er is geen actieve contest.", ephemeral=True)
-            return
 
-        embed = make_contest_embed(contest)
-        embed.title = "📋  Actieve contest"
-        await interaction.followup.send(embed=embed)
+        if contest_id:
+            contest = await db.get_contest_by_id(contest_id)
+            if not contest:
+                await interaction.followup.send(f"❌ Contest #{contest_id} niet gevonden.", ephemeral=True)
+                return
+            embed = make_contest_embed(contest)
+            embed.title = "📋  Contest info"
+            await interaction.followup.send(embed=embed)
+        else:
+            contests = await db.get_active_contests()
+            if not contests:
+                await interaction.followup.send("❌ Er zijn geen actieve contests.", ephemeral=True)
+                return
+            for contest in contests:
+                embed = make_contest_embed(contest)
+                embed.title = f"📋  Contest #{contest['id']}"
+                await interaction.followup.send(embed=embed)
 
     # ── Admin commands ──────────────────────────────────────────────────────
 
     # /endcontest
-    @app_commands.command(name="endcontest", description="[Admin] Sluit de huidige contest vroegtijdig af")
+    @app_commands.command(name="endcontest", description="[Admin] Sluit een contest vroegtijdig af")
+    @app_commands.describe(contest_id="Contest ID (zie /listcontests)")
     @has_admin_role()
-    async def endcontest(self, interaction: discord.Interaction):
+    async def endcontest(self, interaction: discord.Interaction, contest_id: int):
         await interaction.response.defer()
-        contest = await db.get_active_contest()
-        if not contest:
-            await interaction.followup.send("❌ Geen actieve contest.", ephemeral=True)
+        contest = await db.get_contest_by_id(contest_id)
+        if not contest or not contest["active"]:
+            await interaction.followup.send(f"❌ Geen actieve contest met ID #{contest_id}.", ephemeral=True)
             return
         await self._close_contest(contest, manual_channel=interaction.channel)
-        await interaction.followup.send("✅ Contest afgesloten en winnaar bepaald.")
+        await interaction.followup.send(f"✅ Contest #{contest_id} afgesloten en winnaar bepaald.")
 
     # /cancelcontest
-    @app_commands.command(name="cancelcontest", description="[Admin] Annuleer de huidige contest zonder winnaar")
+    @app_commands.command(name="cancelcontest", description="[Admin] Annuleer een contest zonder winnaar")
+    @app_commands.describe(contest_id="Contest ID (zie /listcontests)")
     @has_admin_role()
-    async def cancelcontest(self, interaction: discord.Interaction):
+    async def cancelcontest(self, interaction: discord.Interaction, contest_id: int):
         await interaction.response.defer()
-        contest = await db.get_active_contest()
-        if not contest:
-            await interaction.followup.send("❌ Geen actieve contest.", ephemeral=True)
+        contest = await db.get_contest_by_id(contest_id)
+        if not contest or not contest["active"]:
+            await interaction.followup.send(f"❌ Geen actieve contest met ID #{contest_id}.", ephemeral=True)
             return
 
         await db.close_contest(contest["id"])
@@ -317,10 +388,19 @@ class Contest(commands.Cog):
         )
         if channel:
             await channel.send(embed=embed)
-        await interaction.followup.send("✅ Contest geannuleerd zonder winnaar.")
+        await interaction.followup.send(f"✅ Contest #{contest_id} geannuleerd zonder winnaar.")
+
+        log_embed = discord.Embed(
+            title="🚫 Contest geannuleerd",
+            description=f"**{interaction.user}** heeft contest **#{contest['id']}** geannuleerd.",
+            color=discord.Color.red(),
+            timestamp=datetime.now()
+        )
+        log_embed.add_field(name="Map", value=contest['map_name'], inline=False)
+        await self.log(log_embed)
 
     # /deletecontest
-    @app_commands.command(name="deletecontest", description="[Admin] Verwijder een contest en alle bijbehorende scores permanent")
+    @app_commands.command(name="deletecontest", description="[Admin] Verwijder een contest permanent")
     @app_commands.describe(contest_id="Het ID van de contest (zie /listcontests)")
     @has_admin_role()
     async def deletecontest(self, interaction: discord.Interaction, contest_id: int):
@@ -357,79 +437,87 @@ class Contest(commands.Cog):
     # ── Polling loop ────────────────────────────────────────────────────────
     @tasks.loop(minutes=5)
     async def poll_scores(self):
-        contest = await db.get_active_contest()
-        if not contest:
-            return
-
-        end = datetime.fromisoformat(contest["end_date"])
-        if datetime.now() > end:
-            await self._close_contest(contest)
+        contests = await db.get_active_contests()
+        if not contests:
             return
 
         users = await db.get_all_linked_users()
-        for user in users:
-            try:
-                raw_scores = await osu.get_user_scores_on_beatmap(user["osu_id"], contest["beatmap_id"])
-                if not raw_scores:
-                    continue
 
-                # Groepeer per mod categorie, houd beste score per categorie bij
-                best_per_cat: dict[str, dict] = {}
-                for score in raw_scores:
-                    mods_list = [m["acronym"] for m in score.get("mods", [])] if isinstance(score.get("mods"), list) else score.get("mods", [])
-                    mods = parse_mods(mods_list)
+        for contest in contests:
+            end = datetime.fromisoformat(contest["end_date"])
+            if datetime.now() > end:
+                await self._close_contest(contest)
+                continue
 
-                    if is_banned(mods):
+            for user in users:
+                try:
+                    raw_scores = await osu.get_user_scores_on_beatmap(user["osu_id"], contest["beatmap_id"])
+                    if not raw_scores:
                         continue
 
-                    cat = get_category(mods)
-                    if cat is None:
-                        continue
+                    best_per_cat: dict[str, dict] = {}
+                    for score in raw_scores:
+                        mods_list = [m["acronym"] for m in score.get("mods", [])] if isinstance(score.get("mods"), list) else score.get("mods", [])
+                        mods = parse_mods(mods_list)
 
-                    miss = score["statistics"].get("count_miss", 0)
-                    acc = round(score.get("accuracy", 0) * 100, 2)
+                        if is_banned(mods):
+                            continue
 
-                    if cat not in best_per_cat:
-                        best_per_cat[cat] = score
-                    else:
-                        prev = best_per_cat[cat]
-                        prev_miss = prev["statistics"].get("count_miss", 0)
-                        prev_acc = round(prev.get("accuracy", 0) * 100, 2)
-                        if miss < prev_miss or (miss == prev_miss and acc > prev_acc):
+                        cat = get_category(mods)
+                        if cat is None:
+                            continue
+
+                        miss = score["statistics"].get("count_miss", 0)
+                        acc = round(score.get("accuracy", 0) * 100, 2)
+
+                        if cat not in best_per_cat:
                             best_per_cat[cat] = score
+                        else:
+                            prev = best_per_cat[cat]
+                            prev_miss = prev["statistics"].get("count_miss", 0)
+                            prev_acc = round(prev.get("accuracy", 0) * 100, 2)
+                            if miss < prev_miss or (miss == prev_miss and acc > prev_acc):
+                                best_per_cat[cat] = score
 
-                for cat, score in best_per_cat.items():
-                    mods_list = [m["acronym"] for m in score.get("mods", [])] if isinstance(score.get("mods"), list) else score.get("mods", [])
-                    miss = score["statistics"].get("count_miss", 0)
-                    acc = round(score.get("accuracy", 0) * 100, 2)
-                    score_id = score.get("id", 0)
-                    mod_str = mods_display(mods_list)
+                    for cat, score in best_per_cat.items():
+                        mods_list = [m["acronym"] for m in score.get("mods", [])] if isinstance(score.get("mods"), list) else score.get("mods", [])
+                        miss = score["statistics"].get("count_miss", 0)
+                        acc = round(score.get("accuracy", 0) * 100, 2)
+                        score_id = score.get("id", 0)
+                        mod_str = mods_display(mods_list)
 
-                    updated = await db.upsert_score(
-                        contest_id=contest["id"],
-                        user_id=user["discord_id"],
-                        discord_username=user["discord_username"],
-                        osu_username=user["osu_username"],
-                        misscount=miss,
-                        accuracy=acc,
-                        score_id=score_id,
-                        mod_category=cat,
-                        mods_display=mod_str,
+                        updated = await db.upsert_score(
+                            contest_id=contest["id"],
+                            user_id=user["discord_id"],
+                            discord_username=user["discord_username"],
+                            osu_username=user["osu_username"],
+                            misscount=miss,
+                            accuracy=acc,
+                            score_id=score_id,
+                            mod_category=cat,
+                            mods_display=mod_str,
+                        )
+
+                        if updated:
+                            channel = self.bot.get_channel(contest["channel_id"])
+                            if channel:
+                                label = MOD_LABELS.get(cat, cat)
+                                embed = discord.Embed(
+                                    description=f"**{user['osu_username']}** heeft een nieuwe beste score in **{label}**\n`{mod_str}` · {miss}x miss · {acc:.2f}%",
+                                    color=MOD_COLORS.get(cat, COLOR_PINK)
+                                )
+                                await channel.send(embed=embed)
+
+                except Exception as e:
+                    print(f"[Poll] Fout voor {user['osu_username']} in contest #{contest['id']}: {e}")
+                    log_embed = discord.Embed(
+                        title="⚠️ Poll error",
+                        description=f"Fout bij het ophalen van scores voor **{user['osu_username']}** in contest **#{contest['id']}**.",
+                        color=discord.Color.orange(),
+                        timestamp=datetime.now()
                     )
-
-                    if updated:
-                        channel = self.bot.get_channel(contest["channel_id"])
-                        if channel:
-                            from mods import MOD_LABELS
-                            label = MOD_LABELS.get(cat, cat)
-                            embed = discord.Embed(
-                                description=f"**{user['osu_username']}** heeft een nieuwe beste score in **{label}**\n`{mod_str}` · {miss}x miss · {acc:.2f}%",
-                                color=MOD_COLORS.get(cat, COLOR_PINK)
-                            )
-                            await channel.send(embed=embed)
-
-            except Exception as e:
-                print(f"[Poll] Fout voor {user['osu_username']}: {e}")
+                    log_embed.add_field(name="Error", value=f"```{str(e)[:500]}```", inline=False)
+                    await self.log(log_embed)
 
     @poll_scores.before_loop
     async def before_poll(self):
@@ -443,7 +531,6 @@ class Contest(commands.Cog):
 
         scores_by_cat = await db.get_all_scores_for_contest(contest["id"])
 
-        # Winnaars per categorie + punten uitdelen
         winners_by_cat = {}
         mentions = []
         for cat in MOD_CATEGORIES:
@@ -459,6 +546,22 @@ class Contest(commands.Cog):
         embed = make_winner_embed(contest, winners_by_cat)
         mention_str = " ".join(mentions) if mentions else ""
         await channel.send(content=f"🎉 Gefeliciteerd {mention_str}!" if mention_str else "🎉", embed=embed)
+
+        log_embed = discord.Embed(
+            title="🏁 Contest afgesloten",
+            description=f"Contest **#{contest['id']}** is afgesloten.",
+            color=COLOR_GOLD,
+            timestamp=datetime.now()
+        )
+        log_embed.add_field(name="Map", value=f"[{contest['map_name']}]({contest['map_url']})", inline=False)
+        for cat, winner in winners_by_cat.items():
+            label = MOD_LABELS.get(cat, cat)
+            log_embed.add_field(
+                name=f"🥇 {label}",
+                value=f"{winner['osu_username']} · {winner['misscount']}x miss · {winner['accuracy']:.2f}%",
+                inline=True
+            )
+        await self.log(log_embed)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Contest(bot))
